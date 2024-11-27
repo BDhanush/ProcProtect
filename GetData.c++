@@ -15,6 +15,11 @@ using json = nlohmann::json;
 
 std::ofstream antiVirus("antivirus.txt"); 
 
+string MODEL="llama3.2";
+string URL="http://127.0.0.1:11434/api/generate";
+
+int CONTEXT_LENGTH=128000;
+
 set<string> pathsToSearch={
     "cmdline",
     "exe",
@@ -87,14 +92,18 @@ int ollama_get(std::string fileName, std::string contents) {
     curl = curl_easy_init();
     if (curl) {
         json payload = {
-            {"model", "llama3.2"},
+            {"model", MODEL},
             {"system", "You are an antivirus that takes input the contents of a file from the proc file system and tells if the process is a malware. ONLY RESPOND IF YOU THINK THE PROCESS IS A MALWARE ELSE GIVE EMPTY OUTPUT."},
             {"prompt", "file name:"+fileName+"\n"+contents},
-            {"stream", false}
+            {"stream", false},
+            {"options", {
+                    {"num_ctx", CONTEXT_LENGTH}
+                }
+            }
         };
         
         std::string jsonPayload = payload.dump();
-        curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:11434/api/generate");
+        curl_easy_setopt(curl, CURLOPT_URL, URL.c_str());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonPayload.c_str());
         
         // Set headers, especially Content-Type
@@ -139,7 +148,7 @@ void sendChunks(string& path,string& contents)
     for(int i=0;i<contents.length();i++)
     {
         chunk+=contents[i];
-        if(chunk.length()==1900)
+        if(chunk.length()==CONTEXT_LENGTH-100)
         {
             ollama_get(path,chunk);
             chunk="";
@@ -286,7 +295,7 @@ void daemonize() {
 
 int main()
 {
-    // daemonize();
+    daemonize();
     ofstream jsonData("ProcJson.json");
     std::string path = "/proc/";
     jsonData<<"{\n";
