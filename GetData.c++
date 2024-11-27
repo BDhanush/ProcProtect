@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
-#include <set>
 
 namespace fs = std::filesystem;
 using namespace std;
@@ -16,14 +15,13 @@ using json = nlohmann::json;
 
 std::ofstream antiVirus("antivirus.txt"); 
 
-set<string> pathsToSkip={
-    // "/proc/keys","/proc/kmsg","/proc/kcore","/proc/1","/proc/2"
-    // "/proc/cpuinfo",
-    // "/proc/meminfo",
-    // "/proc/interrupts",
-    // "/proc/iomem",
-    // "/proc/modules",
-    // "net",
+set<string> pathsToSearch={
+    "cmdline",
+    "exe",
+    "fd",
+    "maps",
+    "status",
+    "net"
 
 };
 
@@ -111,7 +109,7 @@ int ollama_get(std::string fileName, std::string contents) {
         if (res != CURLE_OK) {
             fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
         } else {
-            std::cout << response << std::endl;
+            // std::cout << response << std::endl;
 
             try {
                 json jsonResponse = json::parse(response);
@@ -208,27 +206,50 @@ string lastDir(string& path)
     return s;
 }
 
+int getPid(string& path)
+{
+    int i=0;
+    int slashCount=0;
+    while(i<path.length() && slashCount<2)
+    {
+        slashCount+=path[i]=='/';
+        i++;
+    }
+    int ret=0;
+    for(;i<path.length() && path[i]!='/';i++)
+    {
+        if(!(path[i]>='0' && path[i]<='9'))
+        {
+            return -1;
+        }
+        ret*=10;
+        ret+=path[i]-'0';
+    }
+    return ret;
+}
+
 void crawl(string path,ofstream& jsonData)
 {
     // printDepth(depth,"\"",jsonData);
     if(!fs::is_directory(path))
     {
-        // jsonData<<"\"\n";
-        jsonData<<"\"";
-        jsonData<<path;
-        jsonData<<"\": ";
-        readFile(path,jsonData);
-        jsonData<<"\n,\n";
-        // printDepth(depth,"\"\n",jsonData);
+        if(pathsToSearch.find(lastDir(path))!=pathsToSearch.end() && getPid(path)>100000)
+        {
+            // cout<<path<<" "<<getPid(path)<<endl;
+            // jsonData<<"\"\n";
+            jsonData<<"\"";
+            jsonData<<path;
+            jsonData<<"\": ";
+            readFile(path,jsonData);
+            jsonData<<"\n,\n";
+            // printDepth(depth,"\"\n",jsonData);
+        }
         return;
     }
     for (const auto & entry : fs::directory_iterator(path)){
         string newPath=entry.path();
         if(!fs::is_symlink(newPath) && is_readable(newPath)){
-            if(pathsToSkip.find(newPath)==pathsToSkip.end() && pathsToSkip.find(lastDir(newPath))==pathsToSkip.end())
-            {
-                crawl(newPath,jsonData);
-            }
+            crawl(newPath,jsonData);
         }
     }
     
