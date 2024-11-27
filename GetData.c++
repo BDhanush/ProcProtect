@@ -7,9 +7,12 @@
 #include <unistd.h>
 #include <algorithm>
 #include <nlohmann/json.hpp>
+#include <curl/curl.h>
 
 namespace fs = std::filesystem;
 using namespace std;
+using json = nlohmann::json;
+std::ofstream antiVirus("antivirus.txt"); 
 
 set<string> pathsToSkip={
     // "/proc/keys","/proc/kmsg","/proc/kcore","/proc/1","/proc/2"
@@ -24,7 +27,7 @@ set<string> pathsToSkip={
 
 string to_json_value_format(const string& raw_string) {
     // Use nlohmann::json to escape the string as a JSON value (without a key)
-    nlohmann::json json_value = raw_string; // Directly assign raw_string to a JSON value
+    json json_value = raw_string; // Directly assign raw_string to a JSON value
     return json_value.dump();               // Serialize the JSON value to a string
 }
 
@@ -47,8 +50,85 @@ void printDepth(int depth,string s,ofstream& jsonData)
     jsonData<<string(depth, '\t');
     jsonData<<s;
 }
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* response) {
+    size_t totalSize = size * nmemb;
+    response->append((char*)contents, totalSize);
+    return totalSize;
+}
 
-void readFile(string& path,int depth,ofstream& jsonData)
+int ollama_get(std::string fileName, std::string contents) {
+    CURL* curl;
+    CURLcode res;
+    std::string response;
+
+    curl = curl_easy_init();
+    if (curl) {
+        json payload = {
+            {"model", "llama3.2"},
+            {"system", "You are an antivirus that takes input the contents of a file from the proc file system and tells if the process is a malware. ONLY RESPOND IF YOU THINK THE PROCESS IS A MALWARE ELSE GIVE EMPTY OUTPUT."},
+            {"prompt", "file name:"+fileName+"\n"+contents},
+            {"stream", false}
+        };
+        
+        std::string jsonPayload = payload.dump();
+        curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:11434/api/generate");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonPayload.c_str());
+        
+        // Set headers, especially Content-Type
+        struct curl_slist *headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        } else {
+            std::cout << response << std::endl;
+
+            try {
+                json jsonResponse = json::parse(response);
+                if (jsonResponse.contains("response")) {
+                    string info=jsonResponse["response"];
+                    antiVirus << "\n" << fileName << ":\n" << info << std::endl;
+                } else {
+                    std::cerr << "Response field not found in the JSON response." << std::endl;
+                }
+            } catch (const json::exception& e) {
+                std::cerr << "Error parsing JSON response: " << e.what() << std::endl;
+            }
+        }
+
+        // Cleanup
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+    }
+
+    return 0;
+}
+
+
+void sendChunks(string& path,string& contents)
+{
+    string chunk="";
+    for(int i=0;i<contents.length();i++)
+    {
+        chunk+=contents[i];
+        if(chunk.length()==1900)
+        {
+            ollama_get(path,chunk);
+            chunk="";
+        }
+    }
+    if(chunk.length())
+    {
+        ollama_get(path,chunk);
+    }
+}
+
+void readFile(string& path,ofstream& jsonData)
 {    
     int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
     
@@ -75,7 +155,9 @@ void readFile(string& path,int depth,ofstream& jsonData)
         }
     }
     try{
-        jsonData<<to_json_value_format(value);
+        string valueJson=to_json_value_format(value);
+        jsonData<<valueJson;
+        sendChunks(path,valueJson);
     }catch(exception e){
         value="";
         jsonData<<to_json_value_format(value);
@@ -101,36 +183,29 @@ string lastDir(string& path)
     return s;
 }
 
-void crawl(string path,int depth,ofstream& jsonData)
+void crawl(string path,ofstream& jsonData)
 {
-    printDepth(depth,"\"",jsonData);
-    jsonData<<path;
-    jsonData<<"\": ";
+    // printDepth(depth,"\"",jsonData);
     if(!fs::is_directory(path))
     {
         // jsonData<<"\"\n";
-        readFile(path,depth+1,jsonData);
-        jsonData<<"\n";
+        jsonData<<"\"";
+        jsonData<<path;
+        jsonData<<"\": ";
+        readFile(path,jsonData);
+        jsonData<<"\n,\n";
         // printDepth(depth,"\"\n",jsonData);
         return;
-    }else{
-        jsonData<<"{\n";
     }
-    bool first=true;
     for (const auto & entry : fs::directory_iterator(path)){
         string newPath=entry.path();
         if(!fs::is_symlink(newPath) && is_readable(newPath)){
             if(pathsToSkip.find(newPath)==pathsToSkip.end() && pathsToSkip.find(lastDir(newPath))==pathsToSkip.end())
             {
-                if(!first){
-                    printDepth(depth+1,",\n",jsonData);
-                }
-                crawl(newPath,depth+1,jsonData);
-                first=false;
+                crawl(newPath,jsonData);
             }
         }
     }
-    printDepth(depth,"}\n",jsonData);
     
 }
 
@@ -165,11 +240,12 @@ void daemonize() {
 
 int main()
 {
-    daemonize();
+    // daemonize();
     ofstream jsonData("ProcJson.json");
     std::string path = "/proc/";
     jsonData<<"{\n";
-    crawl(path,1,jsonData);
+    crawl(path,jsonData);
+    // ollama_get("","");
     jsonData<<"}";
     return 0;
     
