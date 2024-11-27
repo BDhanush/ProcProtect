@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
+#include <set>
 
 namespace fs = std::filesystem;
 using namespace std;
 using json = nlohmann::json;
+
 std::ofstream antiVirus("antivirus.txt"); 
 
 set<string> pathsToSkip={
@@ -50,6 +52,29 @@ void printDepth(int depth,string s,ofstream& jsonData)
     jsonData<<string(depth, '\t');
     jsonData<<s;
 }
+
+void printEval(string& fileName,string& info)
+{
+    int i=0;
+    while(i<info.length() && !((info[i]>='a' && info[i]<='z') || info[i]>='A' && info[i]<='Z'))
+    {
+        i++;
+    }
+    string firstWord="";
+    for(;i<info.length() && ((info[i]>='a' && info[i]<='z') || info[i]>='A' && info[i]<='Z');i++)
+    {
+        firstWord+=info[i];
+        if(firstWord.back()<='a')
+        {
+            firstWord.back()+=32;
+        }
+    }
+    set<string> neg={"empty","no","not","nothing","none"};
+    if(neg.find(firstWord)==neg.end())
+        antiVirus << "\n" << fileName << ":\n" << info << std::endl;
+
+}
+
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* response) {
     size_t totalSize = size * nmemb;
     response->append((char*)contents, totalSize);
@@ -92,7 +117,7 @@ int ollama_get(std::string fileName, std::string contents) {
                 json jsonResponse = json::parse(response);
                 if (jsonResponse.contains("response")) {
                     string info=jsonResponse["response"];
-                    antiVirus << "\n" << fileName << ":\n" << info << std::endl;
+                    printEval(fileName,info);
                 } else {
                     std::cerr << "Response field not found in the JSON response." << std::endl;
                 }
